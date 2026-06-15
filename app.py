@@ -29,8 +29,14 @@ if "is_vip" not in st.session_state:
 # 4. FUNCIONES DE AUTENTICACIÓN
 def registrar_usuario(email, password):
     try:
+        # Registrar el usuario en la autenticación de Supabase
         res = supabase.auth.sign_up({"email": email, "password": password})
         if res.user:
+            try:
+                # Intentar crear el perfil de forma segura
+                supabase.table("perfiles").insert({"id": res.user.id, "is_vip": False}).execute()
+            except Exception:
+                pass # Si la tabla tarda en responder, no frena el registro del usuario
             st.success("¡Registro exitoso! Ya puedes iniciar sesión en la pestaña correspondiente.")
         else:
             st.error("No se pudo completar el registro. Verifica los datos.")
