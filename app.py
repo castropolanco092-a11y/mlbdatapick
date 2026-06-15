@@ -1,120 +1,142 @@
 import streamlit as st
-import pandas as pd
-import requests
-from datetime import datetime
+import os
+from supabase import create_client, Client
+from dotenv import load_dotenv
 
-# 1. Configuración de la página
+# 1. CONFIGURACIÓN DE LA PÁGINA (Debe ser la primera instrucción de Streamlit)
 st.set_page_config(page_title="MLB DataPick", layout="wide", initial_sidebar_state="expanded")
 
-# 2. Estilo CSS Deportivo Oscuro
-st.markdown("""
-    <style>
-    .stApp { background-color: #0b0f19; color: #ffffff; }
-    .price-card {
-        background-color: #161f32; padding: 20px; border-radius: 15px;
-        border: 2px solid #233554; text-align: center; margin-bottom: 15px;
-    }
-    .price-title { color: #00df89; font-size: 22px; font-weight: bold; }
-    .price-value { font-size: 32px; font-weight: bold; margin: 5px 0; color: #ffffff; }
-    .main-title { color: #00b4d8; font-size: 50px; font-weight: bold; text-align: center; }
-    </style>
-    """, unsafe_allow_html=True)
+# 2. CARGAR VARIABLES DE ENTORNO
+load_dotenv()
 
-# --- SCRIPT PARA BUSCAR LOS PARTIDOS REALES DE HOY ---
-@st.cache_data(ttl=3600)  # Guarda los datos por 1 hora para no saturar la API
-def obtener_partidos_mlb():
-    fecha_hoy = datetime.now().strftime("%Y-%m-%d")
-    url = f"https://statsapi.mlb.com/api/v1/schedule/games/?sportId=1&date={fecha_hoy}"
-    
+# Intentar leer desde Streamlit Cloud (Secrets) o local (.env)
+url: str = st.secrets.get("SUPABASE_URL") or os.environ.get("SUPABASE_URL")
+key: str = st.secrets.get("SUPABASE_KEY") or os.environ.get("SUPABASE_KEY")
+
+if not url or not key:
+    st.error("Error: No se encontraron las credenciales de Supabase. Configura los Secrets en Streamlit.")
+    st.stop()
+
+# Inicializar cliente de Supabase
+supabase: Client = create_client(url, key)
+
+# 3. MANEJO DE SESIÓN EN STREAMLIT
+if "user" not in st.session_state:
+    st.session_state.user = None
+if "is_vip" not in st.session_state:
+    st.session_state.is_vip = False
+
+# 4. FUNCIONES DE AUTENTICACIÓN
+def registrar_usuario(email, password):
     try:
-        response = requests.get(url)
-        data = response.json()
-        partidos = []
-        
-        if "dates" in data and len(data["dates"]) > 0:
-            for juego in data["dates"][0]["games"]:
-                home_team = juego["teams"]["home"]["team"]["name"]
-                away_team = juego["teams"]["away"]["team"]["name"]
-                status = juego["status"]["detailedState"]
-                
-                # Simulamos las probabilidades usando un cálculo basado en el ID del juego
-                # Esto es temporal hasta que metas tu modelo matemático de predicciones
-                prob_home = 50 + (juego["gamePk"] % 20)
-                prob_away = 100 - prob_home
-                
-                prediccion = f"{home_team} ML" if prob_home > prob_away else f"{away_team} ML"
-                
-                partidos.append({
-                    "Partido (Visitante vs Local)": f"{away_team} @ {home_team}",
-                    "Estado": status,
-                    "Probabilidad": f"{home_team} ({prob_home}%) vs {away_team} ({prob_away}%)",
-                    "Sugerencia VIP": prediccion
-                })
-        return pd.DataFrame(partidos)
+        res = supabase.auth.sign_up({"email": email, "password": password})
+        if res.user:
+            st.success("¡Registro exitoso! Ya puedes iniciar sesión en la pestaña correspondiente.")
+        else:
+            st.error("No se pudo completar el registro. Verifica los datos.")
     except Exception as e:
-        return pd.DataFrame(columns=["Partido (Visitante vs Local)", "Estado", "Probabilidad", "Sugerencia VIP"])
+        st.error(f"Error al registrar: {str(e)}")
 
-# --- BARRA LATERAL: SISTEMA DE LOGIN (SIMULACIÓN DE CLIENTE VIP) ---
-with st.sidebar:
-    st.markdown("## 🔐 Acceso VIP")
-    st.write("Si ya compraste tu suscripción, ingresa tus credenciales aquí:")
-    
-    usuario = st.text_input("Usuario (Correo)")
-    contrasena = st.text_input("Contraseña", type="password")
-    
-    # Creamos un usuario de prueba para nosotros
-    if st.button("Iniciar Sesión", use_container_width=True):
-        if usuario == "admin@mlb.com" and contrasena == "1234":
-            st.session_state["vip_activo"] = True
-            st.success("¡Acceso concedido, Bienvenido!")
+def iniciar_sesion(email, password):
+    try:
+        res = supabase.auth.sign_in_with_password({"email": email, "password": password})
+        if res.user:
+            st.session_state.user = res.user
+            
+            # Consultar en la tabla pública 'perfiles' si es VIP
+            perfil = supabase.table("perfiles").select("is_vip").eq("id", res.user.id).execute()
+            if perfil.data:
+                st.session_state.is_vip = perfil.data[0].get("is_vip", False)
+            else:
+                st.session_state.is_vip = False
+                
+            st.toast("¡Inicio de sesión correcto!", icon="🔥")
+            st.rerun()
         else:
-            st.error("Credenciales incorrectas o membresía vencida.")
-            st.session_state["vip_activo"] = False
+            st.error("Credenciales incorrectas.")
+    except Exception as e:
+        st.error(f"Error de inicio de sesión: {str(e)}")
 
-    if st.button("Cerrar Sesión", use_container_width=True):
-        st.session_state["vip_activo"] = False
+def cerrar_sesion():
+    try:
+        supabase.auth.sign_out()
+        st.session_state.user = None
+        st.session_state.is_vip = False
         st.rerun()
+    except Exception as e:
+        st.error(f"Error al cerrar sesión: {str(e)}")
 
-# --- CUERPO PRINCIPAL DE LA PÁGINA ---
-st.markdown('<div class="main-title">MLB DataPick</div>', unsafe_allow_html=True)
-st.markdown("<h3 style='text-align: center; color: #8892b0;'>Sistema Inteligente de Predicciones Basado en Datos</h3>", unsafe_allow_html=True)
-st.write("---")
-
-col_izquierda, col_derecha = st.columns([1, 1.3], gap="large")
-
-with col_izquierda:
-    st.markdown("## 📊 El Algoritmo")
-    st.write("Nuestro sistema procesa estadísticas históricas, rendimiento de pitchers y rachas en tiempo real.")
+# 5. BARRA LATERAL (AUTENTICACIÓN)
+with st.sidebar:
+    st.title("⚾ MLB DataPick")
+    st.write("---")
     
-    st.markdown("### 💳 Suscripciones VIP")
-    col_sub1, col_sub2 = st.columns(2)
-    with col_sub1:
-        st.markdown('<div class="price-card"><div class="price-title">Pase Semanal</div><div class="price-value">$9.99</div><p>• 7 días VIP</p></div>', unsafe_allow_html=True)
-    with col_sub2:
-        st.markdown('<div class="price-card" style="border: 2px solid #00b4d8;"><div class="price-title" style="color: #00b4d8;">Plan Mensual</div><div class="price-value">$29.99</div><p>• 30 días VIP</p></div>', unsafe_allow_html=True)
-
-with col_derecha:
-    st.markdown("## 🔮 Predicciones del Día")
-    
-    # Descargamos los partidos reales usando tu función
-    df_juegos = obtener_partidos_mlb()
-    
-    # Verificamos si el usuario está logueado como VIP
-    if st.session_state.get("vip_activo", False):
-        st.balloons() # ¡Efecto de celebración!
-        st.success("🔓 ¡Acceso VIP Activo! Viendo los datos reales y predicciones en vivo del sistema:")
-        
-        # Mostramos la tabla COMPLETA con las predicciones del algoritmo
-        st.dataframe(df_juegos, use_container_width=True, hide_index=True)
-    else:
-        st.warning("⚠️ Contenido Protegido. Inicia sesión en la barra lateral para desbloquear las sugerencias del algoritmo.")
-        
-        # Mostramos los partidos reales pero OCULTAMOS las predicciones y probabilidades
-        if not df_juegos.empty:
-            st.write("### Partidos programados para hoy (Bloqueados):")
-            df_bloqueado = df_juegos[["Partido (Visitante vs Local)", "Estado"]].copy()
-            df_bloqueado["Probabilidad"] = "🔒 Solo para Miembros VIP"
-            df_bloqueado["Sugerencia VIP"] = "🔒 Solo para Miembros VIP"
-            st.dataframe(df_bloqueado, use_container_width=True, hide_index=True)
+    if st.session_state.user:
+        st.write(f"**Usuario:** {st.session_state.user.email}")
+        if st.session_state.is_vip:
+            st.success("✨ Acceso VIP Activo")
         else:
-            st.info("No hay partidos programados para el día de hoy.")
+            st.info("Plan: Usuario Estándar")
+        
+        if st.button("Cerrar Sesión", use_container_width=True):
+            cerrar_sesion()
+    else:
+        tab_login, tab_registro = st.tabs(["Iniciar Sesión", "Registrarse"])
+        
+        with tab_login:
+            login_email = st.text_input("Correo electrónico", key="login_email")
+            login_pass = st.text_input("Contraseña", type="password", key="login_pass")
+            if st.button("Entrar", use_container_width=True):
+                if login_email and login_pass:
+                    iniciar_sesion(login_email, login_pass)
+                else:
+                    st.warning("Por favor rellena todos los campos.")
+                    
+        with tab_registro:
+            reg_email = st.text_input("Correo electrónico", key="reg_email")
+            reg_pass = st.text_input("Contraseña (mínimo 6 caracteres)", type="password", key="reg_pass")
+            if st.button("Crear Cuenta", use_container_width=True):
+                if reg_email and reg_pass:
+                    if len(reg_pass) >= 6:
+                        registrar_usuario(reg_email, reg_pass)
+                    else:
+                        st.sidebar.error("La contraseña debe tener al menos 6 caracteres.")
+                else:
+                    st.warning("Por favor rellena todos los campos.")
+
+# 6. CONTENIDO PRINCIPAL Y CONTROL DE CONTENIDO VIP
+st.title("Predicciones del Día - MLB")
+st.write("Analítica avanzada y Sabermetría para tus decisiones de mercado.")
+
+# Simulación de partidos (Datos de prueba para la interfaz)
+partidos = [
+    {"equipos": "NY Yankees vs Boston Red Sox", "tipo": "Gratis", "prediccion": "Yankees a ganar (-140)", "analisis": "Merrit tiene un xFIP de 3.20 en sus últimas 3 salidas. Boston sufre contra lanzadores zurdos (wRC+ de 88)."},
+    {"equipos": "LA Dodgers vs SF Giants", "tipo": "Gratis", "prediccion": "Alta de 8.5 carreras", "analisis": "El viento sopla hacia afuera a 12mph. Ambos abridores conceden un alto porcentaje de elevados (FB% > 42%)."},
+    {"equipos": "Houston Astros vs NY Mets", "tipo": "VIP", "prediccion": "Astros -1.5 Run Line", "analisis": "Ventaja clara en el bullpen. El SIERA promedio de Houston es de 2.85 frente a un pen de los Mets muy desgastado."},
+    {"equipos": "Atlanta Braves vs Philadelphia Phillies", "tipo": "VIP", "prediccion": "Phillies a ganar (+110)", "analisis": "Valor matemático detectado en las cuotas de apertura. Wheeler domina la alineación interna de Atlanta."}
+]
+
+# Mostrar los partidos en la interfaz
+for p in partidos:
+    with st.container():
+        st.write("---")
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            st.subheader(p["equipos"])
+            
+        with col2:
+            if p["tipo"] == "VIP":
+                st.markdown("🔴 **PARTIDO VIP**")
+            else:
+                st.markdown("🟢 **PARTIDO GRATUITO**")
+        
+        # Lógica de bloqueo
+        if p["tipo"] == "VIP" and not st.session_state.is_vip:
+            st.warning("🔒 Este análisis está reservado exclusivamente para miembros VIP. Inicia sesión o adquiere un plan para desbloquearlo.")
+        else:
+            if p["tipo"] == "VIP" and st.session_state.is_vip:
+                # Efecto visual de celebración al desbloquear contenido premium
+                st.balloons()
+            st.info(f"**Predicción sugerida:** {p['prediccion']}")
+            st.write(f"**Análisis Técnico:** {p['analisis']}")
