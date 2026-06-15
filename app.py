@@ -49,12 +49,19 @@ def iniciar_sesion(email, password):
         if res.user:
             st.session_state.user = res.user
             
-            # Consultar en la tabla pública 'perfiles' si es VIP
-            perfil = supabase.table("perfiles").select("is_vip").eq("id", res.user.id).execute()
-            if perfil.data:
-                st.session_state.is_vip = perfil.data[0].get("is_vip", False)
-            else:
+            # PLAN A: Intentar leer la base de datos de perfiles
+            try:
+                perfil = supabase.table("perfiles").select("is_vip").eq("id", res.user.id).execute()
+                if perfil.data:
+                    st.session_state.is_vip = perfil.data[0].get("is_vip", False)
+                else:
+                    st.session_state.is_vip = False
+            except Exception:
                 st.session_state.is_vip = False
+            
+            # PLAN B: Si eres tú probando con tu correo máster, te fuerza el VIP de inmediato
+            if email.lower() == "jonron2026@gmail.com":
+                st.session_state.is_vip = True
                 
             st.toast("¡Inicio de sesión correcto!", icon="🔥")
             st.rerun()
